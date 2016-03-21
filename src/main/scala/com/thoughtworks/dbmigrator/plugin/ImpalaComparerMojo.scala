@@ -1,14 +1,15 @@
 package com.thoughtworks.dbmigrator.plugin
 
-import java.io.FileWriter
+import java.io.{File, FileWriter}
 import java.sql.DriverManager
 import com.thoughtworks.dbmigrator.config.{TableConfig, Config}
+import com.typesafe.scalalogging.slf4j.Logger
 import org.json4s._
 import org.json4s.native.JsonMethods._
+import org.slf4j.LoggerFactory
 
 import scala.io.Source._
 
-import org.apache.log4j.Logger
 import org.apache.maven.plugin.AbstractMojo
 import org.apache.maven.plugins.annotations.{Mojo, Parameter}
 
@@ -23,7 +24,7 @@ class ImpalaComparerMojo extends AbstractMojo{
   @Parameter(name = "outputDir")
   private var outputDir: String = "/tmp/asd"
 
-  private val logger = Logger.getLogger(classOf[ImpalaComparerMojo])
+  val logger = Logger(LoggerFactory.getLogger(classOf[ImpalaComparerMojo]))
 
   override def execute() = {
     val lines = fromFile(configFile).getLines.mkString("\n")
@@ -33,10 +34,12 @@ class ImpalaComparerMojo extends AbstractMojo{
       tableConfig => {
         val tuple = makeQuery(config.db1, config.db2, config.outputLimit, tableConfig)
         val errorRecords = executeQuery(config, selectColsAlias = tuple._1, query = tuple._2)
+        val fileName = s"$outputDir/${tableConfig.tableName}"
 
         if (errorRecords.nonEmpty){
+          logger.info(s"Found errors is ${tableConfig.tableName}")
           writeToFile(
-            s"$outputDir/${tableConfig.tableName}",
+            fileName,
             List(
               tuple._2,
               "----------",
@@ -44,6 +47,8 @@ class ImpalaComparerMojo extends AbstractMojo{
               errorRecords.mkString("\n")
             ).mkString("\n")
           )
+        } else {
+          new File(fileName).delete()
         }
       }
     )
