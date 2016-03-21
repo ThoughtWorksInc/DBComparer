@@ -1,42 +1,63 @@
 package com.thoughtworks.dbmigrator.plugin
 
-import java.sql.{DriverManager}
+import java.io.FileWriter
+import java.sql.DriverManager
+import com.thoughtworks.dbmigrator.config.{TableConfig, Config}
+import org.json4s._
+import org.json4s.native.JsonMethods._
+
+import scala.io.Source._
 
 import org.apache.log4j.Logger
 import org.apache.maven.plugin.AbstractMojo
-import org.apache.maven.plugins.annotations.Mojo
+import org.apache.maven.plugins.annotations.{Mojo, Parameter}
 
 
 @Mojo(name = "comapare_impala")
 class ImpalaComparerMojo extends AbstractMojo{
+  implicit val formats = DefaultFormats
+
+  @Parameter(name = "configFile")
+  private var configFile: String = "/Users/achalaggarwal/Projects/DBComparer/config.json"
+
+  @Parameter(name = "outputDir")
+  private var outputDir: String = "/tmp/asd"
+
   private val logger = Logger.getLogger(classOf[ImpalaComparerMojo])
 
   override def execute() = {
-    val jdbcUrl = "jdbc:hive2://172.18.35.27:21050/;auth=noSasl"
+    val lines = fromFile(configFile).getLines.mkString("\n")
+    val config: Config = parse(lines).extract[Config]
 
-    val outputLimit = 100
+    config.tableConfigs.foreach(
+      tableConfig => {
+        val tuple = makeQuery(config.db1, config.db2, config.outputLimit, tableConfig)
+        val errorRecords = executeQuery(config, selectColsAlias = tuple._1, query = tuple._2)
 
-    val db1 = "test_new_impala"
-    val db2 = "achalag_impala"
-
-    val tableName = "changelog"
-
-    val uniqueKeyCols = List(
-      "version"
+        if (errorRecords.nonEmpty){
+          writeToFile(
+            s"$outputDir/${tableConfig.tableName}",
+            List(
+              tuple._2,
+              "----------",
+              tuple._1.mkString(", "),
+              errorRecords.mkString("\n")
+            ).mkString("\n")
+          )
+        }
+      }
     )
+  }
 
-    val dataCols = List(
-      "name"
-    )
-
+  def makeQuery(db1:String, db2:String, outputLimit: Int, tableConfig: TableConfig) = {
     val tableAAlias = "a"
     val tableBAlias = "b"
 
-    val aUniqueCols = getFQColName(uniqueKeyCols)(tableAAlias)
-    val bUniqueCols = getFQColName(uniqueKeyCols)(tableBAlias)
+    val aUniqueCols = getFQColName(tableConfig.uniqueCols)(tableAAlias)
+    val bUniqueCols = getFQColName(tableConfig.uniqueCols)(tableBAlias)
 
-    val aDataCols = getFQColName(dataCols)(tableAAlias)
-    val bDataCols = getFQColName(dataCols)(tableBAlias)
+    val aDataCols = getFQColName(tableConfig.dataCols)(tableAAlias)
+    val bDataCols = getFQColName(tableConfig.dataCols)(tableBAlias)
 
     val aNulCondGen = bUniqueCols.map(s => s"$s is null").mkString(" OR ")
     val bNulCondGen = aUniqueCols.map(s => s"$s is null").mkString(" OR ")
@@ -50,31 +71,40 @@ class ImpalaComparerMojo extends AbstractMojo{
          |SELECT
          |  ${selectColsWithAlias.mkString(", ")}
          |FROM
-         |  $db1.$tableName $tableAAlias
+         |  ${db1}.${tableConfig.tableName} $tableAAlias
          |FULL OUTER JOIN
-         |  $db2.$tableName $tableBAlias
+         |  ${db2}.${tableConfig.tableName} $tableBAlias
          |ON
          |  (${makeCond(aUniqueCols,bUniqueCols)(" = ", " AND ")})
          |WHERE $aNulCondGen OR $bNulCondGen OR ${makeCond(aDataCols,bDataCols)(" <> ", " OR ")}
-         |LIMIT $outputLimit
+         |LIMIT ${outputLimit}
       """.stripMargin
 
-    println(query)
+    (selectColsAlias, query)
+  }
 
-    using(createConnection(jdbcUrl, "", "")) {
+  def executeQuery(config : Config, selectColsAlias: List[String], query : String) = {
+    logger.info(query)
+    var output : List[String] = List()
+
+    using(createConnection(config.jdbcUrl, "", "")) {
       connection =>
-      using(connection.createStatement) {
-        statement => using(statement.executeQuery(query)) {
-          result =>
-            logger.info("Fetching columns value")
-            println(tableName)
-            println(selectColsAlias)
-            while (result.next) {
-              println(selectColsAlias.map(col => result.getObject(col)))
-            }
+        using(connection.createStatement) {
+          statement => using(statement.executeQuery(query)) {
+            result =>
+              logger.info("Fetching columns value")
+              while (result.next) {
+                output = output ++ List(selectColsAlias.map(
+                  col => {
+                    val value = result.getObject(col)
+                    if (value != null) value.toString else null
+                  }
+                ).mkString(","))
+              }
+          }
         }
-      }
     }
+    output
   }
 
   def getFQColName(cols : List[String])(alias : String) = {
@@ -99,6 +129,7 @@ class ImpalaComparerMojo extends AbstractMojo{
       }
     }
   }
+
   def using[T <: { def close() }](resource: T)(block: T => Unit)
   {
     try {
@@ -107,4 +138,9 @@ class ImpalaComparerMojo extends AbstractMojo{
       if (resource != null) resource.close()
     }
   }
+
+  def writeToFile(fileName:String, data:String) =
+    using (new FileWriter(fileName)) {
+      fileWriter => fileWriter.write(data)
+    }
 }

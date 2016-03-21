@@ -74,6 +74,12 @@
       <version>0.13.1-cdh5.3.8</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.json4s</groupId>
+      <artifactId>json4s-native_2.10</artifactId>
+      <version>3.3.0</version>
+    </dependency>
+
     <!-- Test -->
     <dependency>
       <groupId>junit</groupId>
