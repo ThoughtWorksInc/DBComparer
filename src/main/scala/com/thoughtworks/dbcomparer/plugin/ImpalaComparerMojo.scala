@@ -1,8 +1,8 @@
-package com.thoughtworks.dbmigrator.plugin
+package com.thoughtworks.dbcomparer.plugin
 
 import java.io.{File, FileWriter}
 import java.sql.DriverManager
-import com.thoughtworks.dbmigrator.config.{TableConfig, Config}
+import com.thoughtworks.dbcomparer.config.{TableConfig, Config}
 import com.typesafe.scalalogging.slf4j.Logger
 import org.json4s._
 import org.json4s.native.JsonMethods._
@@ -27,17 +27,23 @@ class ImpalaComparerMojo extends AbstractMojo{
   val logger = Logger(LoggerFactory.getLogger(classOf[ImpalaComparerMojo]))
 
   override def execute() = {
-    val lines = fromFile(configFile).getLines.mkString("\n")
-    val config: Config = parse(lines).extract[Config]
+    val configFile = System.getProperty("configFile", this.configFile)
+    val outputDir = System.getProperty("outputDir", this.outputDir)
+    val doDataComp = java.lang.Boolean.parseBoolean(System.getProperty("doDataComp", "false"))
+
+    val config: Config = parse(
+      fromFile(configFile).getLines.mkString("\n")
+      ).extract[Config]
 
     config.tableConfigs.foreach(
       tableConfig => {
-        val tuple = makeQuery(config.db1, config.db2, config.outputLimit, tableConfig)
+        val tuple = makeQuery(config.db1, config.db2, config.outputLimit, tableConfig, doDataComp)
         val errorRecords = executeQuery(config, selectColsAlias = tuple._1, query = tuple._2)
         val fileName = s"$outputDir/${tableConfig.tableName}"
 
         if (errorRecords.nonEmpty){
-          logger.info(s"Found errors is ${tableConfig.tableName}")
+          logger.info(s"Found errors in ${tableConfig.tableName}")
+          logger.info(s"----------------------------------------")
           writeToFile(
             fileName,
             List(
@@ -54,39 +60,56 @@ class ImpalaComparerMojo extends AbstractMojo{
     )
   }
 
-  def makeQuery(db1:String, db2:String, outputLimit: Int, tableConfig: TableConfig) = {
+  def makeQuery(db1:String, db2:String, outputLimit: Int, tableConfig: TableConfig, doDataComp:Boolean) = {
     val tableAAlias = "a"
     val tableBAlias = "b"
 
-    val aUniqueCols = getFQColName(tableConfig.uniqueCols)(tableAAlias)
-    val bUniqueCols = getFQColName(tableConfig.uniqueCols)(tableBAlias)
+    val tableAAliasGen = getFQColName(tableAAlias)_
+    val tableBAliasGen = getFQColName(tableBAlias)_
 
-    val aDataCols = getFQColName(tableConfig.dataCols)(tableAAlias)
-    val bDataCols = getFQColName(tableConfig.dataCols)(tableBAlias)
+    val aUniqueCols = getFQColName(tableConfig.uniqueCols)(tableAAliasGen)
+    val bUniqueCols = getFQColName(tableConfig.uniqueCols)(tableBAliasGen)
 
-    val aNulCondGen = bUniqueCols.map(s => s"$s is null").mkString(" OR ")
-    val bNulCondGen = aUniqueCols.map(s => s"$s is null").mkString(" OR ")
+    val aDataCols = getFQColName(tableConfig.dataCols diff tableConfig.uniqueCols)(tableAAliasGen)
+    val bDataCols = getFQColName(tableConfig.dataCols diff tableConfig.uniqueCols)(tableBAliasGen)
 
-    val selectCols = aUniqueCols ++ bUniqueCols ++ aDataCols ++ bDataCols
+    val aNulCond = bUniqueCols.map(s => s"$s is null")
+    val bNulCond = aUniqueCols.map(s => s"$s is null")
+
+    val nullCond = (aNulCond zip bNulCond).map(t => xor(t._1, t._2))
+
+    val selectCols = if (doDataComp)
+      (aUniqueCols zip bUniqueCols).flatMap(t => List(t._1, t._2))
+    else
+      (aUniqueCols zip bUniqueCols).flatMap(t => List(t._1, t._2)) ++
+      (aDataCols zip bDataCols).flatMap(t => List(t._1, t._2))
+
     val selectColsWithAlias = selectCols.map(s => s"$s as " + s.replace('.', '_'))
     val selectColsAlias = selectCols.map(s => s.replace('.', '_'))
+
+    val additionCond = if (tableConfig.condition.isEmpty) "1=1" else tableConfig.condition.get.map(condition => {
+      tableAAliasGen(condition.col) + " = " + condition.value
+    }).mkString(" AND ")
 
     val query =
       s"""
          |SELECT
          |  ${selectColsWithAlias.mkString(", ")}
          |FROM
-         |  ${db1}.${tableConfig.tableName} $tableAAlias
+         |  $db1.${tableConfig.tableName} $tableAAlias
          |FULL OUTER JOIN
-         |  ${db2}.${tableConfig.tableName} $tableBAlias
+         |  $db2.${tableConfig.tableName} $tableBAlias
          |ON
          |  (${makeCond(aUniqueCols,bUniqueCols)(" = ", " AND ")})
-         |WHERE $aNulCondGen OR $bNulCondGen OR ${makeCond(aDataCols,bDataCols)(" <> ", " OR ")}
-         |LIMIT ${outputLimit}
+         |WHERE (${nullCond.mkString(" AND ")})
+         |      AND $additionCond
+         |LIMIT $outputLimit
       """.stripMargin
 
     (selectColsAlias, query)
   }
+
+  def xor(cola:String, colb:String) = s"(($cola OR $colb) AND NOT ($cola AND $colb))"
 
   def executeQuery(config : Config, selectColsAlias: List[String], query : String) = {
     logger.info(query)
@@ -112,8 +135,12 @@ class ImpalaComparerMojo extends AbstractMojo{
     output
   }
 
-  def getFQColName(cols : List[String])(alias : String) = {
-    cols.map(col => alias + "." + col)
+  def getFQColName(cols : List[String])(aliasGen : String => String) = {
+    cols.map(col => aliasGen(col))
+  }
+
+  def getFQColName(alias : String)(col : String) = {
+    alias + "." + col
   }
 
   def makeCond(tableACol: List[String], tableBCol: List[String])(operator:String, separator:String) = {
