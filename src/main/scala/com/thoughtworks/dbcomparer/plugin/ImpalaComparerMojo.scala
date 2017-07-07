@@ -19,10 +19,10 @@ class ImpalaComparerMojo extends AbstractMojo{
   implicit val formats = DefaultFormats
 
   @Parameter(name = "configFile")
-  private var configFile: String = "/Users/achalaggarwal/Projects/DBComparer/config.json"
+  private val configFile: String = "/Users/achalaggarwal/Projects/DBComparer/config.json"
 
   @Parameter(name = "outputDir")
-  private var outputDir: String = "/tmp/asd"
+  private val outputDir: String = "/tmp/asd"
 
   val logger = Logger(LoggerFactory.getLogger(classOf[ImpalaComparerMojo]))
 
@@ -73,8 +73,8 @@ class ImpalaComparerMojo extends AbstractMojo{
     val aDataCols = getFQColName(tableConfig.dataCols diff tableConfig.uniqueCols)(tableAAliasGen)
     val bDataCols = getFQColName(tableConfig.dataCols diff tableConfig.uniqueCols)(tableBAliasGen)
 
-    val aNulCond = bUniqueCols.map(s => s"$s is null")
-    val bNulCond = aUniqueCols.map(s => s"$s is null")
+    val aNulCond = aUniqueCols.map(s => s"$s is null")
+    val bNulCond = bUniqueCols.map(s => s"$s is null")
 
     val nullCond = (aNulCond zip bNulCond).map(t => xor(t._1, t._2))
 

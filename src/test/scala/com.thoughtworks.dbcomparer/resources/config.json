@@ -1,0 +1,13 @@
+{
+  "jdbcUrl" : "jdbc:hive2://host:port/;auth=noSasl",
+  "db1" : "DB1",
+  "db2" : "DB2",
+  "outputLimit" : 1,
+  "tableConfigs" : [
+    {
+      "tableName" : "person",
+      "uniqueCols" : ["first_name", "last_name"],
+      "dataCols" : ["age", "sex"]
+    }
+  ]
+}
